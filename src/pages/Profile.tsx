@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
-import { User, Briefcase, Plus, Pencil, Trash2, Save, X } from 'lucide-react';
+import { User, Briefcase, Plus, Trash2, Save, X, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { userApi, portfolioApi, UserProfile, Holding as ApiHolding } from '@/lib/api';
 import {
   Select,
   SelectContent,
@@ -38,23 +39,23 @@ interface Holding {
 }
 
 export default function Profile() {
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, refreshUser } = useAuth();
   const { toast } = useToast();
   
   const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+  const [isLoadingHoldings, setIsLoadingHoldings] = useState(true);
+  
   const [profile, setProfile] = useState({
-    name: user?.name || '',
-    email: user?.email || '',
-    username: user?.username || '',
+    name: '',
+    email: '',
+    username: '',
     riskTolerance: 'moderate',
     investmentHorizon: 'medium',
   });
   
-  const [holdings, setHoldings] = useState<Holding[]>([
-    { id: '1', symbol: 'INFY', quantity: 100, avgPrice: 1450.50, sector: 'IT' },
-    { id: '2', symbol: 'RELIANCE', quantity: 50, avgPrice: 2890.75, sector: 'Energy' },
-    { id: '3', symbol: 'HDFCBANK', quantity: 75, avgPrice: 1650.25, sector: 'Banking' },
-  ]);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
   
   const [newHolding, setNewHolding] = useState({
     symbol: '',
@@ -64,8 +65,67 @@ export default function Profile() {
   });
   
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [isAddingHolding, setIsAddingHolding] = useState(false);
 
-  if (isLoading) {
+  // Load profile from API
+  useEffect(() => {
+    const loadProfile = async () => {
+      try {
+        const profileData = await userApi.getProfile();
+        setProfile({
+          name: profileData.name || '',
+          email: profileData.email || '',
+          username: profileData.username || '',
+          riskTolerance: profileData.risk_tolerance || 'moderate',
+          investmentHorizon: profileData.investment_horizon || 'medium',
+        });
+      } catch (error) {
+        console.error('Failed to load profile:', error);
+        toast({
+          title: 'Failed to load profile',
+          variant: 'destructive',
+        });
+      } finally {
+        setIsLoadingProfile(false);
+      }
+    };
+
+    if (isAuthenticated) {
+      loadProfile();
+    }
+  }, [isAuthenticated, toast]);
+
+  // Load holdings from API
+  useEffect(() => {
+    const loadHoldings = async () => {
+      try {
+        const holdingsData = await portfolioApi.getHoldings();
+        setHoldings(
+          holdingsData.map((h: ApiHolding) => ({
+            id: h.id,
+            symbol: h.symbol,
+            quantity: h.quantity,
+            avgPrice: h.avg_price,
+            sector: h.sector || 'Other',
+          }))
+        );
+      } catch (error) {
+        console.error('Failed to load holdings:', error);
+        toast({
+          title: 'Failed to load portfolio',
+          variant: 'destructive',
+        });
+      } finally {
+        setIsLoadingHoldings(false);
+      }
+    };
+
+    if (isAuthenticated) {
+      loadHoldings();
+    }
+  }, [isAuthenticated, toast]);
+
+  if (authLoading) {
     return (
       <div className="min-h-[calc(100vh-3.5rem)] flex items-center justify-center">
         <div className="animate-pulse text-muted-foreground">Loading...</div>
@@ -77,15 +137,34 @@ export default function Profile() {
     return <Navigate to="/login" replace />;
   }
 
-  const handleSaveProfile = () => {
-    toast({
-      title: 'Profile updated',
-      description: 'Your profile has been saved successfully.',
-    });
-    setIsEditing(false);
+  const handleSaveProfile = async () => {
+    setIsSaving(true);
+    try {
+      await userApi.updateProfile({
+        name: profile.name,
+        risk_tolerance: profile.riskTolerance,
+        investment_horizon: profile.investmentHorizon,
+      });
+      
+      await refreshUser();
+      
+      toast({
+        title: 'Profile updated',
+        description: 'Your profile has been saved successfully.',
+      });
+      setIsEditing(false);
+    } catch (error) {
+      console.error('Failed to save profile:', error);
+      toast({
+        title: 'Failed to save profile',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleAddHolding = () => {
+  const handleAddHolding = async () => {
     if (!newHolding.symbol || !newHolding.quantity || !newHolding.avgPrice) {
       toast({
         title: 'Error',
@@ -95,30 +174,59 @@ export default function Profile() {
       return;
     }
 
-    const holding: Holding = {
-      id: Date.now().toString(),
-      symbol: newHolding.symbol.toUpperCase(),
-      quantity: parseFloat(newHolding.quantity),
-      avgPrice: parseFloat(newHolding.avgPrice),
-      sector: newHolding.sector || 'Other',
-    };
+    setIsAddingHolding(true);
+    try {
+      const holding = await portfolioApi.addHolding({
+        symbol: newHolding.symbol.toUpperCase(),
+        quantity: parseFloat(newHolding.quantity),
+        avg_price: parseFloat(newHolding.avgPrice),
+        sector: newHolding.sector || 'Other',
+      });
 
-    setHoldings((prev) => [...prev, holding]);
-    setNewHolding({ symbol: '', quantity: '', avgPrice: '', sector: '' });
-    setDialogOpen(false);
-    
-    toast({
-      title: 'Holding added',
-      description: `${holding.symbol} has been added to your portfolio.`,
-    });
+      setHoldings(prev => [
+        ...prev,
+        {
+          id: holding.id,
+          symbol: holding.symbol,
+          quantity: holding.quantity,
+          avgPrice: holding.avg_price,
+          sector: holding.sector || 'Other',
+        },
+      ]);
+      
+      setNewHolding({ symbol: '', quantity: '', avgPrice: '', sector: '' });
+      setDialogOpen(false);
+      
+      toast({
+        title: 'Holding added',
+        description: `${holding.symbol} has been added to your portfolio.`,
+      });
+    } catch (error) {
+      console.error('Failed to add holding:', error);
+      toast({
+        title: 'Failed to add holding',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsAddingHolding(false);
+    }
   };
 
-  const handleDeleteHolding = (id: string) => {
-    setHoldings((prev) => prev.filter((h) => h.id !== id));
-    toast({
-      title: 'Holding removed',
-      description: 'The holding has been removed from your portfolio.',
-    });
+  const handleDeleteHolding = async (id: string) => {
+    try {
+      await portfolioApi.deleteHolding(id);
+      setHoldings(prev => prev.filter(h => h.id !== id));
+      toast({
+        title: 'Holding removed',
+        description: 'The holding has been removed from your portfolio.',
+      });
+    } catch (error) {
+      console.error('Failed to delete holding:', error);
+      toast({
+        title: 'Failed to remove holding',
+        variant: 'destructive',
+      });
+    }
   };
 
   const totalValue = holdings.reduce(
@@ -142,92 +250,104 @@ export default function Profile() {
               variant="ghost"
               size="sm"
               onClick={() => (isEditing ? handleSaveProfile() : setIsEditing(true))}
+              disabled={isSaving}
             >
-              {isEditing ? (
+              {isSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : isEditing ? (
                 <>
                   <Save className="h-4 w-4 mr-1" /> Save
                 </>
               ) : (
                 <>
-                  <Pencil className="h-4 w-4 mr-1" /> Edit
+                  <svg className="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                  </svg>
+                  Edit
                 </>
               )}
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Name</label>
-              {isEditing ? (
-                <Input
-                  value={profile.name}
-                  onChange={(e) => setProfile({ ...profile, name: e.target.value })}
-                />
-              ) : (
-                <p className="text-sm">{profile.name}</p>
-              )}
-            </div>
+            {isLoadingProfile ? (
+              <div className="py-8 text-center text-muted-foreground">Loading profile...</div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">Name</label>
+                  {isEditing ? (
+                    <Input
+                      value={profile.name}
+                      onChange={(e) => setProfile({ ...profile, name: e.target.value })}
+                    />
+                  ) : (
+                    <p className="text-sm">{profile.name}</p>
+                  )}
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Email</label>
-              <p className="text-sm">{profile.email}</p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">Email</label>
+                  <p className="text-sm">{profile.email}</p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Username</label>
-              <p className="text-sm">@{profile.username}</p>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">Username</label>
+                  <p className="text-sm">@{profile.username}</p>
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Risk Tolerance</label>
-              {isEditing ? (
-                <Select
-                  value={profile.riskTolerance}
-                  onValueChange={(v) => setProfile({ ...profile, riskTolerance: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="conservative">Conservative</SelectItem>
-                    <SelectItem value="moderate">Moderate</SelectItem>
-                    <SelectItem value="aggressive">Aggressive</SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : (
-                <p className="text-sm capitalize">{profile.riskTolerance}</p>
-              )}
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">Risk Tolerance</label>
+                  {isEditing ? (
+                    <Select
+                      value={profile.riskTolerance}
+                      onValueChange={(v) => setProfile({ ...profile, riskTolerance: v })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="conservative">Conservative</SelectItem>
+                        <SelectItem value="moderate">Moderate</SelectItem>
+                        <SelectItem value="aggressive">Aggressive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <p className="text-sm capitalize">{profile.riskTolerance}</p>
+                  )}
+                </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Investment Horizon</label>
-              {isEditing ? (
-                <Select
-                  value={profile.investmentHorizon}
-                  onValueChange={(v) => setProfile({ ...profile, investmentHorizon: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="short">Short (1-2 years)</SelectItem>
-                    <SelectItem value="medium">Medium (3-5 years)</SelectItem>
-                    <SelectItem value="long">Long (5+ years)</SelectItem>
-                  </SelectContent>
-                </Select>
-              ) : (
-                <p className="text-sm capitalize">{profile.investmentHorizon} term</p>
-              )}
-            </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-muted-foreground">Investment Horizon</label>
+                  {isEditing ? (
+                    <Select
+                      value={profile.investmentHorizon}
+                      onValueChange={(v) => setProfile({ ...profile, investmentHorizon: v })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="short">Short (1-2 years)</SelectItem>
+                        <SelectItem value="medium">Medium (3-5 years)</SelectItem>
+                        <SelectItem value="long">Long (5+ years)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <p className="text-sm capitalize">{profile.investmentHorizon} term</p>
+                  )}
+                </div>
 
-            {isEditing && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setIsEditing(false)}
-                className="mt-2"
-              >
-                <X className="h-4 w-4 mr-1" /> Cancel
-              </Button>
+                {isEditing && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setIsEditing(false)}
+                    className="mt-2"
+                  >
+                    <X className="h-4 w-4 mr-1" /> Cancel
+                  </Button>
+                )}
+              </>
             )}
           </CardContent>
         </Card>
@@ -294,7 +414,10 @@ export default function Profile() {
                       }
                     />
                   </div>
-                  <Button onClick={handleAddHolding} className="w-full">
+                  <Button onClick={handleAddHolding} className="w-full" disabled={isAddingHolding}>
+                    {isAddingHolding ? (
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    ) : null}
                     Add Holding
                   </Button>
                 </div>
@@ -309,7 +432,9 @@ export default function Profile() {
               </p>
             </div>
 
-            {holdings.length === 0 ? (
+            {isLoadingHoldings ? (
+              <div className="py-8 text-center text-muted-foreground">Loading portfolio...</div>
+            ) : holdings.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-8">
                 No holdings added yet
               </p>

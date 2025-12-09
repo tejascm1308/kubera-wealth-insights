@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { authApi, userApi, setTokens, clearTokens, getToken, ApiError } from '@/lib/api';
 
 interface User {
   id: string;
@@ -14,7 +15,8 @@ interface AuthContextType {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (data: RegisterData) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 interface RegisterData {
@@ -28,62 +30,77 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(() => {
-    return localStorage.getItem('kubera-token');
-  });
+  const [token, setToken] = useState<string | null>(() => getToken());
   const [isLoading, setIsLoading] = useState(true);
 
+  // Load user on mount if token exists
   useEffect(() => {
-    // Check if user is already logged in
-    const storedUser = localStorage.getItem('kubera-user');
-    if (storedUser && token) {
-      setUser(JSON.parse(storedUser));
-    }
-    setIsLoading(false);
-  }, [token]);
+    const initAuth = async () => {
+      const storedToken = getToken();
+      if (storedToken) {
+        try {
+          const profile = await userApi.getProfile();
+          setUser({
+            id: profile.id,
+            email: profile.email,
+            name: profile.name,
+            username: profile.username,
+          });
+          setToken(storedToken);
+        } catch (error) {
+          console.error('Failed to load user:', error);
+          clearTokens();
+          setToken(null);
+        }
+      }
+      setIsLoading(false);
+    };
+
+    initAuth();
+  }, []);
 
   const login = async (email: string, password: string) => {
-    // Simulate API call - replace with actual backend integration
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const response = await authApi.login(email, password);
     
-    // Mock successful login
-    const mockUser: User = {
-      id: '1',
-      email,
-      name: 'Demo User',
-      username: 'demouser',
-    };
-    const mockToken = 'mock-jwt-token-' + Date.now();
-    
-    setUser(mockUser);
-    setToken(mockToken);
-    localStorage.setItem('kubera-token', mockToken);
-    localStorage.setItem('kubera-user', JSON.stringify(mockUser));
+    setTokens(response.access_token, response.refresh_token);
+    setToken(response.access_token);
+    setUser(response.user);
+    localStorage.setItem('kubera-user', JSON.stringify(response.user));
   };
 
   const register = async (data: RegisterData) => {
-    // Simulate API call - replace with actual backend integration
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const response = await authApi.register(data);
     
-    const mockUser: User = {
-      id: '1',
-      email: data.email,
-      name: data.name,
-      username: data.username,
-    };
-    const mockToken = 'mock-jwt-token-' + Date.now();
-    
-    setUser(mockUser);
-    setToken(mockToken);
-    localStorage.setItem('kubera-token', mockToken);
-    localStorage.setItem('kubera-user', JSON.stringify(mockUser));
+    setTokens(response.access_token, response.refresh_token);
+    setToken(response.access_token);
+    setUser(response.user);
+    localStorage.setItem('kubera-user', JSON.stringify(response.user));
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await authApi.logout();
+    } catch (error) {
+      // Ignore logout errors, still clear local state
+      console.error('Logout error:', error);
+    }
     setUser(null);
     setToken(null);
-    localStorage.removeItem('kubera-token');
-    localStorage.removeItem('kubera-user');
+    clearTokens();
+  };
+
+  const refreshUser = async () => {
+    try {
+      const profile = await userApi.getProfile();
+      setUser({
+        id: profile.id,
+        email: profile.email,
+        name: profile.name,
+        username: profile.username,
+      });
+    } catch (error) {
+      console.error('Failed to refresh user:', error);
+    }
   };
 
   return (
@@ -96,6 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         login,
         register,
         logout,
+        refreshUser,
       }}
     >
       {children}

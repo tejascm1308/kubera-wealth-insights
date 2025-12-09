@@ -24,7 +24,7 @@ export default function Register() {
   const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle');
   const [usernameMessage, setUsernameMessage] = useState('');
 
-  // Username validation with debounce
+  // Username validation with debounce - real API call
   useEffect(() => {
     const username = formData.username;
     
@@ -45,19 +45,23 @@ export default function Register() {
     setUsernameStatus('checking');
     
     const timer = setTimeout(async () => {
-      // Simulate API call for username availability
-      // Replace with actual API call: GET /auth/username-available?username=XYZ
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      
-      // Mock: usernames starting with 'admin' are taken
-      const isAvailable = !username.toLowerCase().startsWith('admin');
-      
-      if (isAvailable) {
-        setUsernameStatus('available');
-        setUsernameMessage('Username available');
-      } else {
-        setUsernameStatus('taken');
-        setUsernameMessage('Username already taken');
+      try {
+        const response = await fetch(
+          `http://localhost:8000/auth/username-available?username=${encodeURIComponent(username)}`
+        );
+        const data = await response.json();
+        
+        if (data.available) {
+          setUsernameStatus('available');
+          setUsernameMessage('Username available');
+        } else {
+          setUsernameStatus('taken');
+          setUsernameMessage(data.message || 'Username already taken');
+        }
+      } catch (error) {
+        console.error('Username check failed:', error);
+        setUsernameStatus('invalid');
+        setUsernameMessage('Unable to verify username');
       }
     }, 400);
 

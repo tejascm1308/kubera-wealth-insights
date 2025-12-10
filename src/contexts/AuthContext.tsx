@@ -6,6 +6,7 @@ interface User {
   email: string;
   name: string;
   username: string;
+  email_verified?: boolean;
 }
 
 interface AuthContextType {
@@ -13,10 +14,15 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (data: RegisterData) => Promise<void>;
+  requiresVerification: boolean;
+  pendingUserId: string | null;
+  login: (username: string, password: string, rememberMe?: boolean) => Promise<void>;
+  register: (data: RegisterData) => Promise<{ requiresVerification: boolean; userId?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
+  verifyEmail: (otpCode: string) => Promise<void>;
+  resendVerification: () => Promise<void>;
+  clearPendingVerification: () => void;
 }
 
 interface RegisterData {
@@ -32,6 +38,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(() => getToken());
   const [isLoading, setIsLoading] = useState(true);
+  const [requiresVerification, setRequiresVerification] = useState(false);
+  const [pendingUserId, setPendingUserId] = useState<string | null>(null);
 
   // Load user on mount if token exists
   useEffect(() => {
@@ -39,12 +47,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const storedToken = getToken();
       if (storedToken) {
         try {
-          const profile = await userApi.getProfile();
+          const response = await userApi.getProfile();
+          const profile = response.user;
           setUser({
-            id: profile.id,
+            id: profile.user_id,
             email: profile.email,
             name: profile.name,
             username: profile.username,
+            email_verified: profile.email_verified,
           });
           setToken(storedToken);
         } catch (error) {
@@ -59,44 +69,90 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     initAuth();
   }, []);
 
-  const login = async (email: string, password: string) => {
-    const response = await authApi.login(email, password);
+  const login = async (username: string, password: string, rememberMe: boolean = false) => {
+    const response = await authApi.login(username, password);
     
     setTokens(response.access_token, response.refresh_token);
     setToken(response.access_token);
-    setUser(response.user);
-    localStorage.setItem('kubera-user', JSON.stringify(response.user));
+    
+    const userData: User = {
+      id: response.user.user_id,
+      email: response.user.email,
+      name: response.user.name,
+      username: response.user.username,
+      email_verified: response.user.email_verified,
+    };
+    
+    setUser(userData);
+    localStorage.setItem('kubera-user', JSON.stringify(userData));
+    
+    // Clear any pending verification state
+    setRequiresVerification(false);
+    setPendingUserId(null);
   };
 
-  const register = async (data: RegisterData) => {
+  const register = async (data: RegisterData): Promise<{ requiresVerification: boolean; userId?: string }> => {
     const response = await authApi.register(data);
     
-    setTokens(response.access_token, response.refresh_token);
-    setToken(response.access_token);
-    setUser(response.user);
-    localStorage.setItem('kubera-user', JSON.stringify(response.user));
+    if (response.requires_verification) {
+      // Store pending verification state
+      setRequiresVerification(true);
+      setPendingUserId(response.user_id);
+      return { requiresVerification: true, userId: response.user_id };
+    }
+    
+    // If no verification required, login directly (shouldn't happen typically)
+    return { requiresVerification: false };
+  };
+
+  const verifyEmail = async (otpCode: string) => {
+    if (!pendingUserId) {
+      throw new Error('No pending verification');
+    }
+    
+    await authApi.verifyEmail(pendingUserId, otpCode);
+    
+    // Clear verification state
+    setRequiresVerification(false);
+    setPendingUserId(null);
+  };
+
+  const resendVerification = async () => {
+    if (!pendingUserId) {
+      throw new Error('No pending verification');
+    }
+    
+    await authApi.resendVerification(pendingUserId);
+  };
+
+  const clearPendingVerification = () => {
+    setRequiresVerification(false);
+    setPendingUserId(null);
   };
 
   const logout = async () => {
     try {
       await authApi.logout();
     } catch (error) {
-      // Ignore logout errors, still clear local state
       console.error('Logout error:', error);
     }
     setUser(null);
     setToken(null);
+    setRequiresVerification(false);
+    setPendingUserId(null);
     clearTokens();
   };
 
   const refreshUser = async () => {
     try {
-      const profile = await userApi.getProfile();
+      const response = await userApi.getProfile();
+      const profile = response.user;
       setUser({
-        id: profile.id,
+        id: profile.user_id,
         email: profile.email,
         name: profile.name,
         username: profile.username,
+        email_verified: profile.email_verified,
       });
     } catch (error) {
       console.error('Failed to refresh user:', error);
@@ -110,10 +166,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         token,
         isAuthenticated: !!user,
         isLoading,
+        requiresVerification,
+        pendingUserId,
         login,
         register,
         logout,
         refreshUser,
+        verifyEmail,
+        resendVerification,
+        clearPendingVerification,
       }}
     >
       {children}

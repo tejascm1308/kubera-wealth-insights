@@ -3,25 +3,19 @@ import { cn } from '@/lib/utils';
 interface ChatMessageProps {
   role: 'user' | 'assistant';
   content: string;
+  chartUrl?: string;
   isStreaming?: boolean;
 }
 
-export function ChatMessage({ role, content, isStreaming }: ChatMessageProps) {
+export function ChatMessage({ role, content, chartUrl, isStreaming }: ChatMessageProps) {
   const isUser = role === 'user';
 
   return (
-    <div
-      className={cn(
-        'flex w-full animate-fade-in',
-        isUser ? 'justify-end' : 'justify-start'
-      )}
-    >
+    <div className={cn('flex w-full animate-fade-in', isUser ? 'justify-end' : 'justify-start')}>
       <div
         className={cn(
           'max-w-[80%] px-4 py-3 rounded-lg font-raleway chat-message',
-          isUser
-            ? 'bg-user-bubble text-user-bubble-foreground'
-            : 'bg-bot-bubble text-bot-bubble-foreground'
+          isUser ? 'bg-user-bubble text-user-bubble-foreground' : 'bg-bot-bubble text-bot-bubble-foreground'
         )}
       >
         <p className="text-sm leading-relaxed whitespace-pre-wrap">
@@ -34,6 +28,20 @@ export function ChatMessage({ role, content, isStreaming }: ChatMessageProps) {
             </span>
           )}
         </p>
+        
+        {/* Chart Embed */}
+        {chartUrl && (
+          <div className="mt-3">
+            <iframe
+              src={chartUrl}
+              width="100%"
+              height="400"
+              frameBorder="0"
+              className="rounded-md border border-border"
+              title="Stock Chart"
+            />
+          </div>
+        )}
       </div>
     </div>
   );

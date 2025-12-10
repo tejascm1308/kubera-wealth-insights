@@ -1,14 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Navigate } from 'react-router-dom';
-import { Menu, AlertCircle, RefreshCw } from 'lucide-react';
+import { Menu, AlertCircle, RefreshCw, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ChatSidebar } from '@/components/chat/ChatSidebar';
 import { ChatMessage } from '@/components/chat/ChatMessage';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { useAuth } from '@/contexts/AuthContext';
-import { useChatWebSocket } from '@/hooks/useChatWebSocket';
-import { chatsApi, ChatSummary, ChatMessage as ApiChatMessage } from '@/lib/api';
+import { useChatWebSocket, ToolStatus } from '@/hooks/useChatWebSocket';
+import { chatsApi } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
@@ -16,6 +16,7 @@ interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  chart_url?: string;
 }
 
 interface Chat {
@@ -37,7 +38,7 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // WebSocket hook
-  const handleMessageComplete = useCallback((content: string) => {
+  const handleMessageComplete = useCallback((content: string, metadata?: { chart_url?: string }) => {
     if (!activeChat) return;
     
     setChats(prev =>
@@ -47,7 +48,7 @@ export default function ChatPage() {
               ...chat,
               messages: chat.messages.map((msg, idx) =>
                 idx === chat.messages.length - 1 && msg.role === 'assistant'
-                  ? { ...msg, content }
+                  ? { ...msg, content, chart_url: metadata?.chart_url }
                   : msg
               ),
               lastMessage: content.slice(0, 50),
@@ -69,7 +70,7 @@ export default function ChatPage() {
     isConnected,
     isStreaming,
     streamingContent,
-    error: wsError,
+    toolStatus,
     sendMessage: wsSendMessage,
     reconnect,
   } = useChatWebSocket({
@@ -82,12 +83,11 @@ export default function ChatPage() {
   useEffect(() => {
     const loadChats = async () => {
       try {
-        const chatList = await chatsApi.getChats();
+        const response = await chatsApi.getChats();
         
-        // Convert API format to local format
-        const formattedChats: Chat[] = chatList.map((c: ChatSummary) => ({
-          id: c.id,
-          title: c.title,
+        const formattedChats: Chat[] = response.chats.map((c) => ({
+          id: c.chat_id,
+          title: c.chat_name,
           lastMessage: c.last_message || '',
           timestamp: new Date(c.updated_at),
           messages: [],
@@ -95,7 +95,6 @@ export default function ChatPage() {
         
         setChats(formattedChats);
         
-        // Set active chat to first one if available
         if (formattedChats.length > 0 && !activeChat) {
           setActiveChat(formattedChats[0].id);
         }
@@ -122,20 +121,21 @@ export default function ChatPage() {
       if (!activeChat) return;
       
       const chat = chats.find(c => c.id === activeChat);
-      if (chat && chat.messages.length > 0) return; // Already loaded
+      if (chat && chat.messages.length > 0) return;
       
       try {
-        const chatDetail = await chatsApi.getChat(activeChat);
+        const response = await chatsApi.getChat(activeChat);
         
         setChats(prev =>
           prev.map(c =>
             c.id === activeChat
               ? {
                   ...c,
-                  messages: chatDetail.messages.map((m: ApiChatMessage) => ({
-                    id: m.id,
+                  messages: response.messages.map((m) => ({
+                    id: m.message_id,
                     role: m.role,
                     content: m.content,
+                    chart_url: m.metadata?.chart_url,
                   })),
                 }
               : c
@@ -149,7 +149,6 @@ export default function ChatPage() {
     loadChatMessages();
   }, [activeChat, chats]);
 
-  // Scroll to bottom
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -174,11 +173,11 @@ export default function ChatPage() {
 
   const handleNewChat = async () => {
     try {
-      const newChatData = await chatsApi.createChat('New Chat');
+      const response = await chatsApi.createChat('New Chat');
       
       const newChat: Chat = {
-        id: newChatData.id,
-        title: newChatData.title,
+        id: response.chat_id,
+        title: response.chat_name,
         lastMessage: '',
         timestamp: new Date(),
         messages: [],
@@ -205,7 +204,6 @@ export default function ChatPage() {
       content,
     };
 
-    // Add user message to UI
     setChats(prev =>
       prev.map(chat =>
         chat.id === activeChat
@@ -219,7 +217,6 @@ export default function ChatPage() {
       )
     );
 
-    // Add placeholder for assistant response
     const assistantMessage: Message = {
       id: (Date.now() + 1).toString(),
       role: 'assistant',
@@ -234,8 +231,7 @@ export default function ChatPage() {
       )
     );
 
-    // Send via WebSocket
-    const sent = wsSendMessage(content);
+    const sent = wsSendMessage(activeChat, content);
     if (!sent) {
       toast({
         title: 'Failed to send message',
@@ -246,7 +242,6 @@ export default function ChatPage() {
     }
   };
 
-  // Update streaming content in UI
   useEffect(() => {
     if (!activeChat || !streamingContent) return;
 
@@ -271,7 +266,7 @@ export default function ChatPage() {
     if (!newTitle) return;
     
     try {
-      await chatsApi.updateChat(id, { title: newTitle });
+      await chatsApi.updateChat(id, { chat_name: newTitle });
       setChats(prev =>
         prev.map(chat =>
           chat.id === id ? { ...chat, title: newTitle } : chat
@@ -308,13 +303,7 @@ export default function ChatPage() {
 
   return (
     <div className="h-[calc(100vh-3.5rem)] flex">
-      {/* Sidebar */}
-      <div
-        className={cn(
-          'transition-all duration-300',
-          sidebarOpen ? 'w-64' : 'w-0'
-        )}
-      >
+      <div className={cn('transition-all duration-300', sidebarOpen ? 'w-64' : 'w-0')}>
         {sidebarOpen && (
           <ChatSidebar
             chats={chats}
@@ -327,23 +316,13 @@ export default function ChatPage() {
         )}
       </div>
 
-      {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Chat header */}
         <div className="h-12 px-4 border-b border-border flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-          >
+          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => setSidebarOpen(!sidebarOpen)}>
             <Menu className="h-4 w-4" />
           </Button>
-          <h2 className="font-medium truncate flex-1">
-            {currentChat?.title || 'New Chat'}
-          </h2>
+          <h2 className="font-medium truncate flex-1">{currentChat?.title || 'New Chat'}</h2>
           
-          {/* Connection status */}
           {!isConnected && activeChat && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <AlertCircle className="h-4 w-4 text-warning" />
@@ -355,7 +334,18 @@ export default function ChatPage() {
           )}
         </div>
 
-        {/* Messages */}
+        {/* Tool Status */}
+        {toolStatus.length > 0 && (
+          <div className="px-4 py-2 border-b border-border bg-secondary/50">
+            {toolStatus.map((tool) => (
+              <div key={tool.tool_id} className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Wrench className="h-3 w-3 animate-spin" />
+                <span>{tool.tool_name.replace(/_/g, ' ')}...</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <ScrollArea className="flex-1">
           <div className="max-w-4xl mx-auto px-4 py-6 space-y-4">
             {isLoadingChats ? (
@@ -365,9 +355,7 @@ export default function ChatPage() {
             ) : currentChat?.messages.length === 0 ? (
               <div className="text-center py-20">
                 <h3 className="text-lg font-medium mb-2">Start a conversation</h3>
-                <p className="text-muted-foreground text-sm">
-                  Ask about any Indian stock for detailed analysis
-                </p>
+                <p className="text-muted-foreground text-sm">Ask about any Indian stock for detailed analysis</p>
               </div>
             ) : (
               currentChat?.messages.map((message, index) => (
@@ -375,11 +363,8 @@ export default function ChatPage() {
                   key={message.id}
                   role={message.role}
                   content={message.content}
-                  isStreaming={
-                    isStreaming &&
-                    index === currentChat.messages.length - 1 &&
-                    message.role === 'assistant'
-                  }
+                  chartUrl={message.chart_url}
+                  isStreaming={isStreaming && index === currentChat.messages.length - 1 && message.role === 'assistant'}
                 />
               ))
             )}
@@ -387,7 +372,6 @@ export default function ChatPage() {
           </div>
         </ScrollArea>
 
-        {/* Input */}
         <ChatInput onSend={handleSendMessage} disabled={isStreaming || !isConnected} />
       </div>
     </div>
